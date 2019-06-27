@@ -2,8 +2,8 @@ package main
 
 import (
 	"bufio"
-	"encoding/base64"
-	"encoding/json"
+	"bytes"
+	"compress/gzip"
 	"fmt"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
@@ -17,11 +17,6 @@ import (
 
 var env = os.Getenv("env")
 var prefix = "ingress/"
-
-type KeyPair struct {
-	Cert string `json:"cert"`
-	Key  string `json:"key"`
-}
 
 func main() {
 
@@ -38,60 +33,69 @@ func main() {
 	svc := secretsmanager.New(session.New())
 
 	for _, f := range files {
-		if strings.HasSuffix(f.Name(), "cert") {
+		if strings.HasSuffix(f.Name(), "crt") {
 			domainName := strings.TrimSuffix(f.Name(), path.Ext(f.Name()))
-//			fmt.Println(domainName)
+			//			fmt.Println(domainName)
 
 			// Open cert and key files on disk.
-			certFilename, err := os.Open(domainName + ".cert")
+			certFile, err := os.Open(domainName + ".crt")
 			if err != nil {
 				fmt.Println(err)
 			}
 
-			keyFilename, err := os.Open(domainName + ".key")
+			keyFile, err := os.Open(domainName + ".key")
 			if err != nil {
 				fmt.Println(err)
 			}
 
 			// Read cert and key file content.
-			certReader := bufio.NewReader(certFilename)
+			certReader := bufio.NewReader(certFile)
 			certContent, err := ioutil.ReadAll(certReader)
 			if err != nil {
 				fmt.Println(err)
 			}
 
-			keyReader := bufio.NewReader(keyFilename)
+			keyReader := bufio.NewReader(keyFile)
 			keyContent, err := ioutil.ReadAll(keyReader)
 			if err != nil {
 				fmt.Println(err)
 			}
 
-			// Cert Encode as base64.
-			certEncoded := base64.StdEncoding.EncodeToString(certContent)
+			var cb bytes.Buffer
+			certCompressed := gzip.NewWriter(&cb)
+			certCompressed.Name = certFile.Name()
+			certCompressed.Write(certContent)
+			certCompressed.Close()
 
-			// Key Encode as base64.
-			keyEncoded := base64.StdEncoding.EncodeToString(keyContent)
+			var kb bytes.Buffer
+			keyCompressed := gzip.NewWriter(&kb)
+			keyCompressed.Name = keyFile.Name()
+			keyCompressed.Write(keyContent)
+			keyCompressed.Close()
 
-			secret := KeyPair{certEncoded, keyEncoded}
-//			fmt.Println(secret.Key)
+			certName := prefix + env + "/" + certFile.Name()
 
-			// store encoded data in json
-			jsonSecret, err := json.Marshal(secret)
+			inputCert := &secretsmanager.CreateSecretInput{
+				Description:  aws.String(certFile.Name()),
+				Name:         aws.String(certName),
+				SecretBinary: cb.Bytes(),
+			}
+
+			result, err := svc.CreateSecret(inputCert)
 			if err != nil {
 				fmt.Println(err)
 			}
+			fmt.Println(result)
 
-			fmt.Println(string(jsonSecret))
+			keyName := prefix + env + "/" + keyFile.Name()
 
-			secretName := prefix + env + "/" + domainName
-
-			input := &secretsmanager.CreateSecretInput{
-				Description:  aws.String(domainName),
-				Name:         aws.String(secretName),
-				SecretString: aws.String(string(jsonSecret)),
+			inputKey := &secretsmanager.CreateSecretInput{
+				Description:  aws.String(keyFile.Name()),
+				Name:         aws.String(keyName),
+				SecretBinary: kb.Bytes(),
 			}
 
-			result, err := svc.CreateSecret(input)
+			result, err = svc.CreateSecret(inputKey)
 			if err != nil {
 				fmt.Println(err)
 			}
